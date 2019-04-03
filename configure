@@ -1,0 +1,125 @@
+#!/bin/bash
+
+### adjusted from liquidSVM
+if [ x$OUT = x ]; then
+  OUT=src/Makevars
+fi
+if [ "x$CUDA_PATH_DEFAULT" = x ]; then
+  if which nvcc; then
+  ### This gave some trouble on many systems if there is no global nvcc
+  #   CUDA_PATH_DEFAULT=/usr/local/cuda
+    CUDA_PATH_DEFAULT=`which nvcc | sed "s/\/bin\/nvcc//"`
+  else
+    echo "Warning: fail to set the default cuda path by detecting nvcc path (which nvcc);
+    Please check your cuda installation, as well as nvcc.
+    If cuda and nvcc have been set up but nvcc is not global command,
+    you could also specify the cuda path when installing gpuEpiScan source codes
+    by R CMD INSTALL gpuEpiScan --configure-args=YOUR_CUDA_PATH.
+    Please ignore this warning if cuda path has been specified."
+  fi
+
+fi
+
+## it seems that R 3.1-3.3 have CXX1X and R 3.4 has CXX11 (and deprecates CXX1X)
+if "${R_HOME}/bin/R" CMD config CXX11 > /dev/null ; then
+  gpuMM_CXX=`"${R_HOME}/bin/R" CMD config CXX11`
+elif "${R_HOME}/bin/R" CMD config CXX1X > /dev/null ; then
+  gpuMM_CXX=`"${R_HOME}/bin/R" CMD config CXX1X`
+else
+  gpuMM_CXX=`"${R_HOME}/bin/R" CMD config CXX`
+fi
+
+if [ x$TARGET = x ]; then
+  case `basename $gpuMM_CXX` in
+  g++ | clang++ )
+    if uname -m | grep -iq sparc ; then
+      echo Since this is a sparc processor we set TARGET=default
+      TARGET=default
+    else
+      TARGET=native
+    fi
+    ;;
+  *)
+    echo unknown compiler: $gpuMM_CXX therefore we set TARGET=default
+    TARGET=default
+    ### Now we also should be sure that there is something like -std=c++0x??
+    ;;
+  esac
+  #TARGET=compatible
+  #touch src/gpuMM_R.cpp
+fi
+
+if [ x$gpuMM_TARGET != x ]; then
+  TARGET=$gpuMM_TARGET
+fi
+
+if [ x$1 != x ]; then
+case $1 in
+native | generic | default | debug | empty )
+  TARGET=$1
+  shift 1
+  ;;
+esac
+fi
+
+echo Using target: $TARGET
+echo Using further args: $@
+
+if [ $TARGET = native ]; then
+  CXX_FLAGS="-O2 -march=native $CXX_FLAGS"
+elif [ $TARGET = generic ]; then
+  CXX_FLAGS="-mtune=generic -msse2 -O3 $CXX_FLAGS"
+elif [ $TARGET = default ]; then
+  CXX_FLAGS="$CXX_FLAGS"
+elif [ $TARGET = debug ]; then
+  CXX_FLAGS="-mtune=generic -msse2 -g $CXX_FLAGS"
+elif [ $TARGET = empty ]; then
+  : ## don't do anything
+fi
+
+## the next parameter could be location of cuda:
+if [ "x$1" = xNO_CUDA ]; then
+echo Config: disabling CUDA due to argument NO_CUDA
+  shift 1
+elif [ "x$1" != x ] && [ -d "$1" ]; then
+echo Config: Got CUDA_PATH from argument --configure-args=$1
+  CUDA_PATH="$1"
+  shift 1
+elif [ -d "$CUDA_PATH_DEFAULT" ]; then
+echo Config: Got CUDA_PATH from default location $CUDA_PATH_DEFAULT
+  CUDA_PATH="$CUDA_PATH_DEFAULT"
+fi
+
+if [ x$1 != x ]; then
+  CXX_FLAGS="$@ $CXX_FLAGS"
+fi
+
+if [ "$CUDA_PATH" ]; then
+  CUDA_OBJECTS=
+  for i in `find src/ -name *.cu`; do
+  echo $i
+  j=`basename $i`
+  # export CUDA_OBJECTS="$CUDA_OBJECTS cuda_objects/${j%.*}.o"
+  export CUDA_OBJECTS="$CUDA_OBJECTS ${j%.*}.o"
+  done
+  # mkdir src/cuda_objects
+  CXX_FLAGS="$CXX_FLAGS \$(CPP_CUDA_FLAGS)"
+  ADDITIONAL_LIBS="$ADDITIONAL_LIBS \$(CPP_CUDA_LINK_FLAGS)"
+  ADDITIONAL_CPP_FLAGS="$ADDITIONAL_CPP_FLAGS -DCOMPILE_SEPERATELY__CUDA"
+#else
+#  CUDA_PATH=/dev/null
+fi
+
+echo Config in `pwd`
+echo Config: using CXX_FLAG=$CXX_FLAGS
+echo Config: using ADDITIONAL_LIBS=$ADDITIONAL_LIBS
+echo Config: using ADDITIONAL_CPP_FLAGS=$ADDITIONAL_CPP_FLAGS
+echo Config: using CUDA_PATH=$CUDA_PATH
+echo Config: using CUDA_OBJECTS=$CUDA_OBJECTS
+
+sed -e "s|@ADDITIONAL_CXXFLAGS@|$CXX_FLAGS|" \
+  -e "s|@ADDITIONAL_LIBS@|$ADDITIONAL_LIBS|" \
+  -e "s|@ADDITIONAL_CPP_FLAGS@|$ADDITIONAL_CPP_FLAGS|" \
+  -e "s|@CUDA_PATH@|$CUDA_PATH|" -e "s|@CUDA_OBJECTS@|$CUDA_OBJECTS|" \
+  src/Makevars.in > $OUT
+
